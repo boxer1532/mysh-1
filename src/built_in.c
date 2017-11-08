@@ -36,7 +36,6 @@ int do_fg(int argc, char** argv) {
   if (!validate_fg_argv(argc, argv))
     return -1;
 
-  // TODO: Fill this.
 
   return 0;
 }
