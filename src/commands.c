@@ -1,4 +1,8 @@
-#define FILE_SERVER "/tmp/test_server"
+#define SOCK_PATH "tpf_unix_sock.server"
+#define SERVER_PATH "tpf_unix_sock.server"
+#define CLIENT_PATH "tpf_unix_sock.client"
+
+#define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +19,7 @@
 
 #include "commands.h"
 #include "built_in.h"
+#include "signal_handlers.h"
 
 static struct built_in_command built_in_commands[] = {
   { "cd", do_cd, validate_cd_argv },
@@ -22,10 +27,6 @@ static struct built_in_command built_in_commands[] = {
   { "fg", do_fg, validate_fg_argv }
 };
 
-struct sockaddr_in {
-    unsigned short int sun_family;
-    char sun_path[108];
-};
 
 static int is_built_in_command(const char* command_name)
 {
@@ -40,73 +41,148 @@ static int is_built_in_command(const char* command_name)
   return -1; // Not found
 }
 
-void* cli_function(void *client_sock){
+void* c_function(struct single_command (*c1)[512]){
+  
+  int client_sock, len, fd;
+  struct single_command* com = (*c1);
+
+  struct sockaddr_un server_addr;
+  struct sockaddr_un client_addr;
+
+  memset(&server_addr, 0, sizeof(struct sockaddr_un));
+  memset(&client_addr, 0, sizeof(struct sockaddr_un));
    
-  struct sockaddr_in client_addr;
+  client_sock = socket(AF_UNIX, SOCK_STREAM, 0);
 
-  memset(&client_addr, 0, sizeof(struct sockaddr_in));
-
- *((int*)client_sock) = socket(PF_FILE, SOCK_STREAM, 0);
-
-  if(*((int*)client_sock) == -1){
-      printf("SOCKET ERROR!\n");
+  if(client_sock == -1){
+      printf("SOCKET ERROR\n");
       exit(1);
   }
 
   client_addr.sun_family = AF_UNIX;
-  strcpy(client_addr.sun_path, FILE_SERVER);
+  strcpy(client_addr.sun_path, CLIENT_PATH);
+  len = sizeof(client_addr);
+
+  unlink(CLIENT_PATH);
+
+  if(bind(client_sock, (struct sockaddr *)&client_addr, len) == -1){
+      printf("BIND ERROR\n");
+      close(client_sock);
+      exit(1);
+  }
+  
+  server_addr.sun_family = AF_UNIX;
+  strcpy(server_addr.sun_path, SERVER_PATH);
+
+  if(connect(client_sock, (struct sockaddr *)&server_addr, len) == -1){
+      printf("CONNECTION ERROR\n");
+      close(client_sock);
+      exit(1);
+  }
+ 
+  int saveout = dup(STDOUT_FILENO);
+  dup2(client_sock, STDOUT_FILENO);
+  close(client_sock);
+
+  evaluate_command(1, c1);
+
+  close(STDOUT_FILENO);
+  dup2(saveout, STDOUT_FILENO);
+  close(saveout);
+
+  close(client_sock);
+  
+  pthread_exit(NULL);
 }
+ 
 
 /*
- * Description: Currently this function only handles single built_in commands. You should modify this structure to launch process and offer pipeline functionality.
+ * description: Currently this function only handles single built_in commands. You should modify this structure to launch process and offer pipeline functionality.
  */
 int evaluate_command(int n_commands, struct single_command (*commands)[512])
 {
-
   if(n_commands >= 2){
     struct single_command* incom = (*commands);
     struct single_command* outcom = &((*commands)[1]);
+   
+    struct single_command c1[512];
+    struct single_command c2[512];
+    
+    memcpy(&c1[0], incom, sizeof(struct single_command));
+    memcpy(&c2[0], outcom, sizeof(struct single_command)); 
 
+    void *status;
+    int len;
     int server_sock, client_sock;
-    struct sockaddr_in server_addr, client_addr;
+    int infd, outfd;
+    struct sockaddr_un server_addr, client_addr;
     pthread_t Cthread;
   
-    memset(&server_addr, 0, sizeof(struct sockaddr_in));
-    memset(&client_addr, 0, sizeof(struct sockaddr_in));
+    memset(&server_addr, 0, sizeof(struct sockaddr_un));
+    memset(&client_addr, 0, sizeof(struct sockaddr_un));
 
-    server_sock = socket(PF_FILE, SOCK_STREAM, 0);
+    server_sock = socket(AF_UNIX, SOCK_STREAM, 0);
 
     if(server_sock == -1){
-	    printf("SOCKET ERROR!\n");
-	    exit(1);
+	printf("SOCKET ERROR!\n");
+	exit(1);
     }
-
+    
     server_addr.sun_family = AF_UNIX;
-    strcpy(server_addr.sun_path, FILE_SERVER);
+    strcpy(server_addr.sun_path, SOCK_PATH);
+    len = sizeof(server_addr);
+
+    unlink(SOCK_PATH);
 
     if(bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1){
-      printf("BIND ERROR!\n");
-      exit(1);
+	printf("BIND ERROR!\n");
+	close(server_sock);
+	exit(1);
     }
 
-    int thr_id = pthread_create(&Cthread, NULL, cli_function, (void*)&client_sock);
+    int thr_id = pthread_create(&Cthread, NULL, (void*)c_function, &c1);
 
     if(thr_id < 0){
 	printf("THREAD ERROR!\n");
 	exit(1);
     }
 
-    pthread_join(Cthread, (void*)outcom);
-
+  
     if(listen(server_sock, 5) == -1){
 	printf("LISTEN ERROR!\n");
+	close(server_sock);
 	exit(1);
     }
+    
+   client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &len);
+
+   if(client_sock == -1){
+       printf("ACCEPT ERROR!\n");
+       close(server_sock);
+       close(client_sock);
+       exit(1);
+   }
+
+   pthread_join(Cthread, &status);
+
+   int savein = dup(STDIN_FILENO);
+   dup2(client_sock, STDIN_FILENO);
+   close(client_sock);
+
+   evaluate_command(1, &c2);
    
-    return 0;
+   close(STDIN_FILENO);
+
+   dup2(savein, STDIN_FILENO);
+   close(savein);
+
+   close(server_sock);
+
+   return 0;
   }
+
   
-  if (n_commands > 0) { 
+  else if (n_commands > 0) { 
     struct single_command* com = (*commands);
 
     assert(com->argc != 0);
@@ -128,33 +204,43 @@ int evaluate_command(int n_commands, struct single_command (*commands)[512])
     } else {
       int pid;
       int status;
-      int is_bg= 0;
-
+      
       pid = fork();
 
       if(pid == 0){
+        
+        char coms[256];
+	strcpy(coms, com->argv[0]);
 
-	if(strcmp(com->argv[(com->argc)-1],"&") == 0){
-	  com->argv[(com->argc)-1] = NULL;
-	  (com->argc)--;
-	  is_bg = 1;
-        }      
-
-	if(execv(com->argv[0], com->argv) == -1)
-          exit(0);
-	else if(is_bg == 1){
-	  printf("is_bg : %d\n",is_bg);
-	  signal(SIGSTOP, SIG_DFL);
+	if(execv(com->argv[0], com->argv) == -1){
+            strcpy(com->argv[0], "/usr/local/bin/");
+	    strcat(com->argv[0], coms);
+	    if(execv(com->argv[0], com->argv) == -1){
+              strcpy(com->argv[0], "/usr/bin/");
+	      strcat(com->argv[0], coms);
+	      if(execv(com->argv[0], com->argv) == -1){
+                 strcpy(com->argv[0], "/bin/");
+	         strcat(com->argv[0], coms);
+	         if(execv(com->argv[0], com->argv) == -1){
+		    strcpy(com->argv[0], "/usr/sbin/");
+	            strcat(com->argv[0], coms);
+	            if(execv(com->argv[0], com->argv) == -1){
+                       strcpy(com->argv[0], "/sbin/");
+	               strcat(com->argv[0], coms);
+	              if(execv(com->argv[0], com->argv) == -1){
+			 printf("Invalid Input!\n");
+			 exit(1);
+	              }
+	            }
+	         }
+	      }
+	    }
 	}
-	
-     }
+      }	
       else{
-	  if(is_bg == 0)
-	      wait(&status);
-	  else if(is_bg == 1)
-	      waitpid(pid, &status, WNOHANG);
-	  
-	  return 0;
+          wait(&status);
+	 
+      return 0;
       }
     }
   }
@@ -170,7 +256,7 @@ void free_commands(int n_commands, struct single_command (*commands)[512])
     char** argv = com->argv;
 
     for (int j = 0; j < argc; ++j) {
-      free(argv[j]);
+	free(argv[j]);
     }
 
     free(argv);

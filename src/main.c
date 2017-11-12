@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200112L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,11 +11,11 @@
 
 int main()
 {
-  char buf[8096];
-
   signal(SIGINT, (void*)catch_sigint);
   signal(SIGTSTP, (void*)catch_sigtstp);
-
+    
+  char buf[8096];
+ 
   while (1) {
     fgets(buf, 8096, stdin);
 
@@ -30,6 +31,8 @@ int main()
     if (ret == 1) {
       break;
     }
+
+    memset(buf, 0, sizeof(buf));
   }
 
   return 0;
