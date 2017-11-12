@@ -8,5 +8,5 @@ void catch_sigint(int signalNo)
 
 void catch_sigtstp(int signalNo)
 {
-  signal(SIGTSTP, SIG_IGN);
+  signal(SIGTSTP, SIG_IGN); 
 }
